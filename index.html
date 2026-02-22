@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Objednávky for Express Kurýr!</title>
+    <style>
+        :root {
+            --primary: #007bff;
+            --success: #28a745;
+            --danger: #dc3545;
+            --secondary: #6c757d;
+            --bg: #f8f9fa;
+            --text: #333;
+        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; box-sizing: border-box; }
+        .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1, h2, h3, h4 { text-align: center; }
+        hr { border: 0; border-top: 1px solid #dee2e6; margin: 20px 0; }
+        .note-section { text-align: center; margin-bottom: 20px; font-size: 18px; }
+        button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; transition: 0.2s; }
+        button:hover { opacity: 0.8; }
+        .btn-success { background-color: var(--success); color: white; }
+        .btn-danger { background-color: var(--danger); color: white; }
+        
+        /* Modals */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .modal { background: white; padding: 20px; border-radius: 10px; width: 90%; max-width: 400px; text-align: center; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .modal-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 15px; }
+        .modal-actions button { flex: 1; }
+        .hidden { display: none !important; }
+
+        /* Order Cards */
+        .order-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+        .order-header { padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; background: #e9ecef; font-weight: bold; }
+        .order-header:hover { background: #dde2e6; }
+        .order-body { padding: 15px; display: none; }
+        .order-body.active { display: block; }
+        .meta-text { font-size: 0.85em; margin-top: 5px; }
+        .meta-green { color: var(--success); }
+        .meta-orange { color: #fd7e14; }
+	.meta-blue { color: var(--primary); }
+
+        /* Checkbox states */
+        .state-label { display: flex; align-items: center; margin-bottom: 10px; cursor: pointer; }
+        .state-label input { width: 20px; height: 20px; margin-right: 10px; cursor: pointer; }
+        .state-time { margin-left: auto; font-size: 0.85em; color: var(--secondary); }
+
+        /* Moznosti_Doruceni */
+        .help-text { font-size: 12px; color: var(--secondary); margin-top: 5px; display: block; }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Objednávky for Express Kurýr!</h1>
+    <hr>
+    <div class="note-section">
+        Poznámka pro Express Kurýra: <strong id="kuryrNoteDisplay">Načítání...</strong>
+    </div>
+    <hr>
+    
+    <h3>Probíhající objednávky ve zpracování</h3>
+    <div id="activeOrdersList"></div>
+    
+    <hr>
+    <h3>Doručené zásilky</h3>
+    <div id="archivedOrdersList"></div>
+</div>
+
+<div class="modal-overlay hidden" id="confirmDeliveryModal">
+    <div class="modal">
+        <h3 style="color:var(--primary)">❓ Potvrzení</h3>
+        <p>Ujistěte se, prosím, že byla objednávka doručena kompletně a bez chybějících položek.</p>
+        <div class="modal-actions">
+            <button class="btn-danger" onclick="cancelDelivery()">Ne</button>
+            <button class="btn-success" onclick="confirmDelivery()">Ano</button>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+    import { getDatabase, ref, onValue, update } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCV_IgmkVNrhSTH4UDq_qn2XaWKrD-dYxM",
+      authDomain: "objednavky-81b1e.firebaseapp.com",
+      databaseURL: "https://objednavky-81b1e-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "objednavky-81b1e",
+      storageBucket: "objednavky-81b1e.firebasestorage.app",
+      messagingSenderId: "847014713612",
+      appId: "1:847014713612:web:4e20271bfac4bacbd71129"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    const STATE_LABELS = [
+        "Objednáno v obchodě / v e-shopu",
+        "Platba: checkit",
+        "Na cestě",
+        "Už je skoro u Vás! Právě je na cestě k Vám.",
+        "Přijata transakce",
+        "Doručeno"
+    ];
+
+    let pendingDeliveryOrderId = null;
+    let pendingDeliveryCheckbox = null;
+
+    // Load Note
+    onValue(ref(db, 'poznamka_pro_kuryra'), (snapshot) => {
+        document.getElementById('kuryrNoteDisplay').innerText = snapshot.val() || "Nevyplněno";
+    });
+
+    const formatDate = (ts) => {
+        const d = new Date(ts);
+        return `${d.getDate()}.${d.getMonth()+1}.${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+    };
+
+    window.toggleOrder = (headerEl) => {
+        headerEl.nextElementSibling.classList.toggle('active');
+        const arrow = headerEl.querySelector('.arrow');
+        arrow.innerText = arrow.innerText === '▼' ? '▲' : '▼';
+    }
+
+    window.handleStateChange = (orderId, stepIndex, checkbox) => {
+        const isChecked = checkbox.checked;
+        
+        // Special handle for "Doručeno" (last index)
+        if(stepIndex === STATE_LABELS.length - 1 && isChecked) {
+            pendingDeliveryOrderId = orderId;
+            pendingDeliveryCheckbox = checkbox;
+            document.getElementById('confirmDeliveryModal').classList.remove('hidden');
+            return;
+        }
+
+        updateStateInDb(orderId, stepIndex, isChecked);
+    }
+
+    const updateStateInDb = (orderId, stepIndex, isChecked, isArchiving = false) => {
+        const updates = {};
+        updates[`objednavky/${orderId}/stavy/${stepIndex}`] = isChecked;
+        
+        if (isChecked) {
+            const now = Date.now();
+            updates[`objednavky/${orderId}/stavy_casy/${stepIndex}`] = now;
+            if (isArchiving) {
+                updates[`objednavky/${orderId}/isArchived`] = true;
+                updates[`objednavky/${orderId}/doruceno_cas`] = now;
+            }
+        } else {
+            updates[`objednavky/${orderId}/stavy_casy/${stepIndex}`] = null;
+        }
+        
+        update(ref(db), updates);
+    }
+
+    window.cancelDelivery = () => {
+        if(pendingDeliveryCheckbox) pendingDeliveryCheckbox.checked = false;
+        document.getElementById('confirmDeliveryModal').classList.add('hidden');
+        pendingDeliveryOrderId = null;
+    }
+
+    window.confirmDelivery = () => {
+        if(pendingDeliveryOrderId) {
+            updateStateInDb(pendingDeliveryOrderId, STATE_LABELS.length - 1, true, true);
+        }
+        document.getElementById('confirmDeliveryModal').classList.add('hidden');
+    }
+
+    onValue(ref(db, 'objednavky'), (snapshot) => {
+        const activeContainer = document.getElementById('activeOrdersList');
+        const archivedContainer = document.getElementById('archivedOrdersList');
+        activeContainer.innerHTML = ''; archivedContainer.innerHTML = '';
+
+        if(!snapshot.exists()) return;
+
+        let activeOrders = [];
+        let archivedOrders = [];
+
+        snapshot.forEach(child => {
+            const val = child.val();
+            val.id = child.key;
+            if(val.isArchived) archivedOrders.push(val);
+            else activeOrders.push(val);
+        });
+
+        // Sorting
+        activeOrders.sort((a, b) => b.vytvoreno - a.vytvoreno);
+        archivedOrders.sort((a, b) => b.doruceno_cas - a.doruceno_cas);
+
+        const renderOrder = (order) => {
+            let html = `
+                <div class="order-card">
+			<div class="order-header" onclick="toggleOrder(this)">
+                        <div>
+                            ${order.nazev}
+                            <div class="meta-text meta-green">Vytvořeno: ${formatDate(order.vytvoreno)}</div>
+                            ${order.isArchived ? `<div class="meta-text meta-orange">Doručeno: ${formatDate(order.doruceno_cas)}</div>` : ''}
+                            ${(order.upravy && Array.isArray(order.upravy)) ? order.upravy.map(u => `<div class="meta-text meta-blue">Úprava: ${formatDate(u)}</div>`).join('') : ''}
+                        </div>
+                        <span class="arrow">▼</span>
+                    </div>
+                    <div class="order-body">
+                        <p><strong>Obsah:</strong> <br>${order.obsah.replace(/\n/g, '<br>')}</p>
+                        <p><strong>Čas do doručení:</strong> ${formatDate(order.cas_doruceni)}</p>
+                        <p><strong>Způsob:</strong> ${order.zpusob_doruceni}</p>
+                        <p><strong>Zdroj:</strong> ${order.zdroj}</p>
+			<span class="help-text">Zdroj produktu se může lišit, tohle je jen doporučení.</span>
+                        <p><strong>Max. cena:</strong> ${order.max_cena} Kč</p>
+                        ${order.cena_kuryra ? `<p><strong>Cena kurýra:</strong> ${order.cena_kuryra} Kč</p>` : ''}
+                        ${order.dorucovaci_udaje ? `<p><strong>Doručovací údaje:</strong> <br>${order.dorucovaci_udaje.replace(/\n/g, '<br>')}</p>` : ''}
+                        
+                        <hr>
+                        <h4>Průběh:</h4>
+            `;
+            
+            STATE_LABELS.forEach((label, idx) => {
+                const isChecked = order.stavy && order.stavy[idx];
+                const timeStr = (order.stavy_casy && order.stavy_casy[idx]) ? formatDate(order.stavy_casy[idx]) : '';
+                const disabledStr = order.isArchived ? 'disabled' : '';
+                
+                html += `
+                    <label class="state-label">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} ${disabledStr} onchange="handleStateChange('${order.id}', ${idx}, this)">
+                        ${label}
+                        <span class="state-time">${timeStr}</span>
+                    </label>
+                `;
+            });
+
+            html += `</div></div>`;
+            return html;
+        };
+
+        activeOrders.forEach(o => activeContainer.innerHTML += renderOrder(o));
+        archivedOrders.forEach(o => archivedContainer.innerHTML += renderOrder(o));
+    });
+</script>
+</body>
+</html>
